@@ -191,7 +191,7 @@ jobs:
       - name: Build NPM package
         run: |
           npm install
-          WEBVM_MODE=github npm run build
+          npm run build
 
       # Move required files for gh-pages deployment to the deployment directory $DEPLOY_DIR.
       - name: Copy build

@@ -1,0 +1,53 @@
+name: Deploy (Cloud Image)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build NPM package
+        run: |
+          npm install
+          npm run build
+
+      - name: Remove alpine.html
+        run: rm -f build/alpine.html
+
+      - name: Generate index.list
+        shell: bash
+        run: |
+          find build -type d | while read -r dir; do
+            index_list="$dir/index.list"
+            rm -f "$index_list"
+            ls "$dir" | tee "$index_list" > /dev/null
+            chmod +rw "$index_list"
+          done
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/
+
+  deploy_to_github_pages:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    permissions:
+      pages: write
+      id-token: write
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy GitHub Pages site
+        id: deployment
+        uses: actions/deploy-pages@v4
