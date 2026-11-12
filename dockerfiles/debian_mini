@@ -1,25 +1,53 @@
-FROM --platform=linux/386 docker.io/i386/debian:buster
+FROM --platform=linux/amd64 debian:bookworm-slim AS builder
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Point APT to the archived mirrors (Buster is EOL)
-RUN echo "deb [trusted=yes] http://archive.debian.org/debian buster main contrib non-free" \
-  > /etc/apt/sources.list && \
-	echo "deb [trusted=yes] http://archive.debian.org/debian-security buster/updates main" \
-	>> /etc/apt/sources.list
+# Install build tools on amd64 host (no QEMU needed here)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        debootstrap \
+        gawk \
+        git \
+        make \
+        qemu-user-static \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get clean && apt-get update && apt-get -y upgrade
-RUN apt-get -y install apt-utils gcc \
-	python3 vim unzip ruby nodejs \
-	fakeroot dbus base whiptail hexedit \
-	patch wamerican ucf manpages \
-	file luajit make lua5.3 dialog curl \
-	less cowsay netcat-openbsd
-RUN useradd -m user && echo "user:password" | chpasswd
-COPY --chown=user:user ./examples /home/user/examples
-RUN chmod -R +x  /home/user/examples/lua
-# We set WORKDIR, as this gets extracted by Webvm to be used as the cwd. This is optional.
+# Build i386 Debian rootfs via debootstrap (runs on amd64, no QEMU socket issues)
+RUN debootstrap \
+        --foreign \
+        --arch=i386 \
+        --variant=minbase \
+        --include=apt-utils,gcc,python3,vim,unzip,ruby,nodejs,fakeroot,hexedit,patch,file,luajit,make,lua5.3,curl,less,cowsay,netcat-openbsd,passwd,ca-certificates \
+        buster /rootfs http://archive.debian.org/debian
+
+RUN cp /usr/bin/qemu-i386-static /rootfs/usr/bin/
+
+# Complete second stage (runs i386 binaries via QEMU static)
+RUN chroot /rootfs /debootstrap/debootstrap --second-stage || \
+      { cat /rootfs/debootstrap/debootstrap.log; exit 1; }
+
+# Clean apt cache to reduce size
+RUN rm -rf /rootfs/var/cache/apt/archives/*.deb \
+           /rootfs/var/lib/apt/lists/* \
+           /rootfs/debootstrap
+
+# Setup user without useradd (avoids audit interface error in Docker)
+RUN printf '%s\n' 'user:x:1000:1000::/home/user:/bin/bash' >> /rootfs/etc/passwd && \
+    printf '%s\n' 'user:x:1000:' >> /rootfs/etc/group && \
+    printf '%s\n' 'user:$6$rebaaa$oU06PMGW2UxfRYrmT.4yroaLfjt6zAdlQVwpxZW4E2jlPuJhyqenhfgubONy.doSACjDOz9TCTfdmOEAoHpf4.:20000:0:99999:7:::' >> /rootfs/etc/shadow && \
+    sed -i \
+      -e 's#^root:[^:]*:#root:$6$rebaaa$oU06PMGW2UxfRYrmT.4yroaLfjt6zAdlQVwpxZW4E2jlPuJhyqenhfgubONy.doSACjDOz9TCTfdmOEAoHpf4.:#' \
+      /rootfs/etc/shadow && \
+    mkdir -p /rootfs/home/user
+
+COPY --chown=1000:1000 ./examples /rootfs/home/user/examples
+RUN chmod -R +x /rootfs/home/user/examples/lua && \
+    chown -R 1000:1000 /rootfs/home/user && \
+    echo 'root:password' | chroot /rootfs /bin/sh -c 'chpasswd' || true && \
+    echo 'user:password' | chroot /rootfs /bin/sh -c 'chpasswd' || true
+
+FROM scratch
+COPY --from=builder /rootfs /
+
 WORKDIR /home/user/
-# We set env, as this gets extracted by Webvm. This is optional.
 ENV HOME="/home/user" TERM="xterm" USER="user" SHELL="/bin/bash" EDITOR="vim" LANG="C.UTF-8"
-RUN echo 'root:password' | chpasswd
 CMD [ "/bin/bash" ]
